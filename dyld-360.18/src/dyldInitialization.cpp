@@ -95,6 +95,13 @@ extern const Initializer  inits_end    __asm("section$end$__DATA$__mod_init_func
 // dyld (should be static) but is a dynamic executable and needs this hack to run its own initializers.
 // We pass argc, argv, etc in case libc.a uses those arguments
 //
+/*
+ inits_start 和 inits_end 采用内敛汇编的方式获取模块初始化函数的地址
+ 所谓模块初始化函数 就是在加载模块时就要完成的初始化动作(可能在main函数之前), 比如模块使用的包含初始化函数的全局变量, c++类的初始化等等
+ 
+ 参见 https://blog.csdn.net/majiakun1/article/details/99413403
+ */
+
 static void runDyldInitializers(const struct macho_header* mh, intptr_t slide, int argc, const char* argv[], const char* envp[], const char* apple[])
 {
 	for (const Initializer* p = &inits_start; p < &inits_end; ++p) {
@@ -109,13 +116,20 @@ static void runDyldInitializers(const struct macho_header* mh, intptr_t slide, i
 //
 static uintptr_t slideOfMainExecutable(const struct macho_header* mh)
 {
+	// LC Command的树龄
 	const uint32_t cmd_count = mh->ncmds;
+	// 拿到第所有cmd的首地址
 	const struct load_command* const cmds = (struct load_command*)(((char*)mh)+sizeof(macho_header));
+	// 强转类型, 拿到第一个cmd地址
 	const struct load_command* cmd = cmds;
+	// 遍历cmd
 	for (uint32_t i = 0; i < cmd_count; ++i) {
+		// 如果是段命令
 		if ( cmd->cmd == LC_SEGMENT_COMMAND ) {
 			const struct macho_segment_command* segCmd = (struct macho_segment_command*)cmd;
+			// 如果是代码段cmd
 			if ( strcmp(segCmd->segname, "__TEXT") == 0 ) {
+				// 返回 mach首地址和代码段在虚拟内存地址的差值(在mach文件中, 代码段定义的虚拟内存的地址和mach文件首地址是一样的, mh偏移后, 减去代码段文件中定义的虚拟内存首地址, 即可获得滑动地址)
 				return (uintptr_t)mh - segCmd->vmaddr;
 			}
 		}
@@ -259,6 +273,7 @@ uintptr_t start(const struct macho_header* appsMachHeader, int argc, const char*
 	}
 
 	// allow dyld to use mach messaging
+	// 获取mach消息权限
 	mach_init();
 
 	// kernel sets up env pointer to be just past end of agv array
@@ -274,10 +289,16 @@ uintptr_t start(const struct macho_header* appsMachHeader, int argc, const char*
 
 #if DYLD_INITIALIZER_SUPPORT
 	// run all C++ initializers inside dyld
+	/*
+	 调用dyld的初始化模块
+	 inits_start 和 inits_end 采用内敛汇编的方式获取模块初始化函数的地址
+	 所谓模块初始化函数 就是在加载模块时就要完成的初始化动作(可能在main函数之前), 比如模块使用的包含初始化函数的全局变量, c++类的初始化等等
+	 */
 	runDyldInitializers(dyldsMachHeader, slide, argc, argv, envp, apple);
 #endif
 
 	// now that we are done bootstrapping dyld, call dyld's main
+	//获得app在虚拟内存中滑动的地址长度 (在mach文件中, 代码段定义的虚拟内存的地址和mach文件首地址是一样的, mh偏移后, 减去代码段文件中定义的虚拟内存首地址, 即可获得滑动地址)
 	uintptr_t appsSlide = slideOfMainExecutable(appsMachHeader);
 	return dyld::_main(appsMachHeader, appsSlide, argc, argv, envp, apple, startGlue);
 }

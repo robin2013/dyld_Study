@@ -7,37 +7,37 @@
 		<key>Build.xcscheme_^#shared#^_</key>
 		<dict>
 			<key>orderHint</key>
-			<integer>3</integer>
+			<integer>40</integer>
 		</dict>
 		<key>Libsyscall_driverkit.xcscheme_^#shared#^_</key>
 		<dict>
 			<key>orderHint</key>
-			<integer>1</integer>
+			<integer>42</integer>
 		</dict>
 		<key>Libsyscall_dynamic.xcscheme_^#shared#^_</key>
 		<dict>
 			<key>orderHint</key>
-			<integer>4</integer>
+			<integer>39</integer>
 		</dict>
 		<key>Libsyscall_headers_Sim.xcscheme_^#shared#^_</key>
 		<dict>
 			<key>orderHint</key>
-			<integer>6</integer>
+			<integer>45</integer>
 		</dict>
 		<key>Libsyscall_static.xcscheme_^#shared#^_</key>
 		<dict>
 			<key>orderHint</key>
-			<integer>0</integer>
+			<integer>44</integer>
 		</dict>
 		<key>MIG headers.xcscheme_^#shared#^_</key>
 		<dict>
 			<key>orderHint</key>
-			<integer>5</integer>
+			<integer>41</integer>
 		</dict>
 		<key>Syscalls.xcscheme_^#shared#^_</key>
 		<dict>
 			<key>orderHint</key>
-			<integer>2</integer>
+			<integer>43</integer>
 		</dict>
 	</dict>
 </dict>

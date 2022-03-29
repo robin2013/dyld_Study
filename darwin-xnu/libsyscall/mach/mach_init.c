@@ -131,8 +131,12 @@ _mach_fork_child(void)
 void
 mach_init_doit(void)
 {
-	// Initialize cached mach ports defined in mach_init.h
+	// https://www.jianshu.com/p/cc655bfdac13
+	
+	// Initialize cached mach ports defined in mach_init.h 初始化定义在mach_init.h中的缓存的mach 端口
+	// 获取发送权限
 	mach_task_self_ = task_self_trap();
+	// 创建端口
 	_task_reply_port = mach_reply_port();
 
 	if (vm_kernel_page_shift == 0) {
@@ -165,6 +169,8 @@ mach_init_doit(void)
 		vm_page_mask = vm_page_size - 1;
 	}
 
+	// 初始化性能(i386才有 arm平台为空函数)
 	_init_cpu_capabilities();
+	// 空函数
 	_pthread_set_self(0);
 }
