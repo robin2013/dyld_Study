@@ -4539,6 +4539,8 @@ static SyscallHelpers sSysCalls = {
 		&coresymbolication_unload_notifier
 };
 
+// 使用模拟器dyld
+// fd: dyld_sim文件句柄
 __attribute__((noinline))
 static uintptr_t useSimulatorDyld(int fd, const macho_header* mainExecutableMH, const char* dyldPath, 
 								int argc, const char* argv[], const char* envp[], const char* apple[], uintptr_t* startGlue)
@@ -4547,40 +4549,54 @@ static uintptr_t useSimulatorDyld(int fd, const macho_header* mainExecutableMH, 
 	
 	// verify simulator dyld file is owned by root
 	struct stat sb;
+	// 返回值 执行成功则返回0，失败返回-1，错误代码存于errno。
 	if ( fstat(fd, &sb) == -1 )
 		return 0;
 
 	// read first page of dyld file
+	// 读取dyld 在虚拟内存中的第一页
 	uint8_t firstPage[4096];
 	if ( pread(fd, firstPage, 4096, 0) != 4096 )
 		return 0;
 	
 	// if fat file, pick matching slice
+	// 判断是否为fat 文件, 并获取相应的代码段
 	uint64_t fileOffset = 0;
 	uint64_t fileLength = sb.st_size;
+	// 尝试将第一页内存转为 fat_header 结构体
 	const fat_header* fileStartAsFat = (fat_header*)firstPage;
-	if ( fileStartAsFat->magic == OSSwapBigToHostInt32(FAT_MAGIC) ) {
+	// 如果头文件的魔数是 FAT_CIGAM
+	if ( fileStartAsFat->magic == OSSwapBigToHostInt32(FAT_MAGIC) ) {// fat 文件
+		// 定位当前架构的段, 并定位段在制文件的偏移位置
 		if ( !fatFindBest(fileStartAsFat, &fileOffset, &fileLength) ) 
 			return 0;
 		// re-read buffer from start of mach-o slice in fat file
+		// 找到最适合的文件内容后, 将其读入firstPage(例如 如果匹配到arm64, 就会读入arm64 架构的文件内容)
 		if ( pread(fd, firstPage, 4096, fileOffset) != 4096 )
 			return 0;
 	}
+	// 通过比较cpu类型和子cup类型, 判断否非fat文件是否可以运行在当前处理器上
 	else if ( !isCompatibleMachO(firstPage, dyldPath) ) {
 		return 0;
 	}
 	
 	// calculate total size of dyld segments
+	// 计算 segments 的数量
 	const macho_header* mh = (const macho_header*)firstPage;
 	struct macho_segment_command* lastSeg = NULL;
 	struct macho_segment_command* firstSeg = NULL;
+	// 虚拟内存长度
 	uintptr_t mappingSize = 0;
+	// __TEXT预设的虚拟内存地址
 	uintptr_t preferredLoadAddress = 0;
 	const uint32_t cmd_count = mh->ncmds;
 	if ( (sizeof(macho_header) + mh->sizeofcmds) > 4096 )
 		return 0;
-	const struct load_command* const cmds = (struct load_command*)(((char*)mh)+sizeof(macho_header));
+	// 偏移macho_header 长度 到  load_command 的首地址
+	const struct load_command* const cmds = (struct load_command*)(((char*)mh)+sizeof(macho_header))
+	// 获取 load_command 结尾地址 ;
 	const struct load_command* const endCmds = (struct load_command*)(((char*)mh) + sizeof(macho_header) + mh->sizeofcmds);
+	// 第一个cmd
 	const struct load_command* cmd = cmds;
 	for (uint32_t i = 0; i < cmd_count; ++i) {
 		uint32_t cmdLength = cmd->cmdsize;
@@ -4593,19 +4609,21 @@ static uintptr_t useSimulatorDyld(int fd, const macho_header* mainExecutableMH, 
 			case LC_SEGMENT_COMMAND:
 				{
 					struct macho_segment_command* seg = (struct macho_segment_command*)cmd;
-					if ( seg->vmaddr + seg->vmsize < seg->vmaddr )
+					if ( seg->vmaddr + seg->vmsize < seg->vmaddr ) // 虚拟内存的地址不合法
 						return 0;
-					if ( seg->vmsize < seg->filesize )
+					if ( seg->vmsize < seg->filesize ) // 虚拟内存中的大小小于文件大小(正常应该是大于等于文件大小)
 						return 0;
-					if ( lastSeg == NULL ) {
+					if ( lastSeg == NULL ) { // 还没有上一个seg, 说明是第一个遍历的第一个seg
 						// first segment must be __TEXT and start at beginning of file/slice
 						firstSeg = seg;
+						// 第一个seg 必须是 __TEXT 段
 						if ( strcmp(seg->segname, "__TEXT") != 0 )
 							return 0;
 						if ( seg->fileoff != 0 )
 							return 0;
 						if ( seg->filesize < (sizeof(macho_header) + mh->sizeofcmds) )
 							return 0;
+						// __TEXT 期望在虚拟内存中的地址(machO文件中定义的虚拟内存地址)
 						preferredLoadAddress = seg->vmaddr;
 					}
 					else {
@@ -4617,6 +4635,7 @@ static uintptr_t useSimulatorDyld(int fd, const macho_header* mainExecutableMH, 
 						if ( (seg->initprot & VM_PROT_EXECUTE) != 0 )
 							return 0;
 					}
+					// 虚拟内存长度增加
 					mappingSize += seg->vmsize;
 					lastSeg = seg;
 				}
@@ -4627,24 +4646,30 @@ static uintptr_t useSimulatorDyld(int fd, const macho_header* mainExecutableMH, 
 		cmd = nextCmd;
 	}
 	// last segment must be named __LINKEDIT and not writable
+	// 最后一个seg 必须是 __LINKEDIT, 且是不可写入的
 	if ( strcmp(lastSeg->segname, "__LINKEDIT") != 0 )
 		return 0;
 	if ( lastSeg->initprot & VM_PROT_WRITE )
 		return 0;
 
 	// reserve space, then mmap each segment
+	// 申请虚拟内存空间(loadAddress应该加载首地址)
 	vm_address_t loadAddress = 0;
 	if ( ::vm_allocate(mach_task_self(), &loadAddress, mappingSize, VM_FLAGS_ANYWHERE) != 0 )
 		return 0;
 	cmd = cmds;
+	// 代码签名cmd
 	struct linkedit_data_command* codeSigCmd = NULL;
+	// dyld 版本cmd
 	struct source_version_command* dyldVersionCmd = NULL;
 	for (uint32_t i = 0; i < cmd_count; ++i) {
 		switch (cmd->cmd) {
 			case LC_SEGMENT_COMMAND:
 				{
 					struct macho_segment_command* seg = (struct macho_segment_command*)cmd;
+					//loadAddress(当前虚拟内存首地址) 加上每个seg 与__TEXT虚拟内存地址的偏移量, 就是当前seg的虚拟内存地址
 					uintptr_t requestedLoadAddress = seg->vmaddr - preferredLoadAddress + loadAddress;
+					// 重新布局seg 在内存的地址
 					void* segAddress = ::mmap((void*)requestedLoadAddress, seg->filesize, seg->initprot, MAP_FIXED | MAP_PRIVATE, fd, fileOffset + seg->fileoff);
 					//dyld::log("dyld_sim %s mapped at %p\n", seg->segname, segAddress);
 					if ( segAddress == (void*)(-1) )
@@ -4662,7 +4687,7 @@ static uintptr_t useSimulatorDyld(int fd, const macho_header* mainExecutableMH, 
 	}
 
 	// must have code signature which is contained within LINKEDIT segment
-	if ( codeSigCmd == NULL )
+	if ( codeSigCmd == NULL )// 签名无效
 		return 0;
 	if ( codeSigCmd->dataoff < lastSeg->fileoff )
 		return 0;
@@ -4670,9 +4695,13 @@ static uintptr_t useSimulatorDyld(int fd, const macho_header* mainExecutableMH, 
 		return 0;
 
 	fsignatures_t siginfo;
-	siginfo.fs_file_start=fileOffset;							// start of mach-o slice in fat file 
+	// 当前架构文件首地址
+	siginfo.fs_file_start=fileOffset;							// start of mach-o slice in fat file
+	// 代码签名名的位置
 	siginfo.fs_blob_start=(void*)(long)(codeSigCmd->dataoff);	// start of code-signature in mach-o file
+	// 代码签名内容的大小
 	siginfo.fs_blob_size=codeSigCmd->datasize;					// size of code-signature
+	// 验证代码签名
 	int result = fcntl(fd, F_ADDFILESIGS_FOR_DYLD_SIM, &siginfo);
 	if ( result == -1 ) {
 		dyld::log("fcntl(F_ADDFILESIGS_FOR_DYLD_SIM) failed with errno=%d\n", errno);
@@ -4715,6 +4744,7 @@ static uintptr_t useSimulatorDyld(int fd, const macho_header* mainExecutableMH, 
 	info.imageLoadAddress = (mach_header*)loadAddress;
 	info.imageFilePath	  = strdup(dyldPath);
 	info.imageFileModDate = sb.st_mtime;
+	// 添加到全局image list
 	addImagesToAllImages(1, &info);
 	dyld::gProcessInfo->notification(dyld_image_adding, 1, &info);
 
@@ -4724,6 +4754,7 @@ static uintptr_t useSimulatorDyld(int fd, const macho_header* mainExecutableMH, 
 								const macho_header* mainExecutableMH, const macho_header* dyldMH, uintptr_t dyldSlide,
 								const dyld::SyscallHelpers* vtable, uintptr_t* startGlue);
 	sim_entry_proc_t newDyld = (sim_entry_proc_t)entry;
+	// 启动
 	return (*newDyld)(argc, argv, envp, appleParams, mainExecutableMH, (macho_header*)loadAddress,
 					 loadAddress - preferredLoadAddress, 
 					 &sSysCalls, startGlue);
@@ -4743,17 +4774,24 @@ _main(const macho_header* mainExecutableMH, uintptr_t mainExecutableSlide,
 		uintptr_t* startGlue)
 {
 	uintptr_t result = 0;
+	// 保存全局变量
 	sMainExecutableMachHeader = mainExecutableMH;
 #if __MAC_OS_X_VERSION_MIN_REQUIRED
+	// 检查是否可以使用模拟器 dyld(是否模拟器环境)
 	// if this is host dyld, check to see if iOS simulator is being run
+	// 获取当前环境变量 dyly的根路径
 	const char* rootPath = _simple_getenv(envp, "DYLD_ROOT_PATH");
 	if ( rootPath != NULL ) {
 		// look to see if simulator has its own dyld
-		char simDyldPath[PATH_MAX]; 
+		char simDyldPath[PATH_MAX];
+		// 将环境变量中的dyld 路径拷贝到 rootPath
 		strlcpy(simDyldPath, rootPath, PATH_MAX);
+		// 拼接完整加载路径
 		strlcat(simDyldPath, "/usr/lib/dyld_sim", PATH_MAX);
+		// 尝试打开模拟器的dyld_sim
 		int fd = my_open(simDyldPath, O_RDONLY, 0);
-		if ( fd != -1 ) {
+		if ( fd != -1 ) {// 打开成功
+			// 使用模拟器的dyld(即 dyld_sim)
 			result = useSimulatorDyld(fd, mainExecutableMH, simDyldPath, argc, argv, envp, apple, startGlue);
 			if ( !result && (*startGlue == 0) )
 				halt("problem loading iOS simulator dyld");
@@ -4765,6 +4803,7 @@ _main(const macho_header* mainExecutableMH, uintptr_t mainExecutableSlide,
 	CRSetCrashLogMessage("dyld: launch started");
 
 #if LOG_BINDINGS
+	// 日志
 	char bindingsLogPath[256];
 	
 	const char* shortProgName = "unknown";
@@ -4782,7 +4821,8 @@ _main(const macho_header* mainExecutableMH, uintptr_t mainExecutableSlide,
 		sBindingsLogfile = open(bindingsLogPath, O_WRONLY | O_CREAT, 0666);
 	}
 	//dyld::log("open(%s) => %d, errno = %d\n", bindingsLogPath, sBindingsLogfile, errno);
-#endif	
+#endif
+	// 设置链接上下文
 	setContext(mainExecutableMH, argc, argv, envp, apple);
 
 	// Pickup the pointer to the exec path.

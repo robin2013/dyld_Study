@@ -116,7 +116,7 @@ static void runDyldInitializers(const struct macho_header* mh, intptr_t slide, i
 //
 static uintptr_t slideOfMainExecutable(const struct macho_header* mh)
 {
-	// LC Command的树龄
+	// LC Command的数量
 	const uint32_t cmd_count = mh->ncmds;
 	// 拿到第所有cmd的首地址
 	const struct load_command* const cmds = (struct load_command*)(((char*)mh)+sizeof(macho_header));
@@ -234,7 +234,11 @@ static void rebaseDyld(const struct macho_header* mh, intptr_t slide)
 
 	 https://blog.csdn.net/u010206565/article/details/108432252
 	 https://www.coderzhou.com
-	 ??????
+	 https://www.bbsmax.com/A/q4zVYLL2dK/
+	 找出 LC_DYSYMTAB 和 __LINKEDIT 对应的 command；
+	 对非懒加载表进行 rebase；
+	 取出 relocation 对应位置的指针，加上 slide，进行 rebase；
+	 https://juejin.cn/post/6974678419715932174#heading-20
 	 */
 	const relocation_info* const relocsStart = (struct relocation_info*)(linkEditSeg->vmaddr + slide + dynamicSymbolTable->locreloff - linkEditSeg->fileoff);
 	// 获取最后一个重定位对象的最后一个地址
@@ -269,6 +273,14 @@ uintptr_t start(const struct macho_header* appsMachHeader, int argc, const char*
 	// we have to do this before using any global variables
 	if ( slide != 0 ) {// 内存滑动不为空
 		// 滑动虚拟内存地址
+		/*
+		 ：这个方法的rebaseDyld是dyld完成自身重定位的方法。首先dyld本身也是一个动态库。对于普通动态库，符号重定位可以由dyld来加载链接来完成，但是dyld的重定位谁来做？只能是它自身完成。这就是为什么会有rebaseDyld的原因，它其实是在对自身进行重定位，只有完成了自身的重定位它才能使用全局变量和静态变量。
+
+		 作者：普度拉稀
+		 链接：https://www.jianshu.com/p/48554edb8e28
+		 来源：简书
+		 著作权归作者所有。商业转载请联系作者获得授权，非商业转载请注明出处。
+		 */
 		rebaseDyld(dyldsMachHeader, slide);
 	}
 
@@ -277,6 +289,7 @@ uintptr_t start(const struct macho_header* appsMachHeader, int argc, const char*
 	mach_init();
 
 	// kernel sets up env pointer to be just past end of agv array
+	//  获取环境变量
 	const char** envp = &argv[argc+1];
 	
 	// kernel sets up apple pointer to be just past end of envp array
@@ -285,6 +298,7 @@ uintptr_t start(const struct macho_header* appsMachHeader, int argc, const char*
 	++apple;
 
 	// set up random value for stack canary
+	// 栈保护
 	__guard_setup(apple);
 
 #if DYLD_INITIALIZER_SUPPORT

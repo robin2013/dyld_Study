@@ -396,6 +396,7 @@ void ImageLoader::link(const LinkContext& context, bool forceLazysBound, bool pr
 	(*context.setErrorStrings)(dyld_error_kind_none, NULL, NULL, NULL);
 
 	uint64_t t0 = mach_absolute_time();
+	// 递归加载依赖库
 	this->recursiveLoadLibraries(context, preflightOnly, loaderRPaths);
 	context.notifyBatch(dyld_image_state_dependents_mapped);
 	
@@ -581,7 +582,8 @@ void ImageLoader::recursiveLoadLibraries(const LinkContext& context, bool prefli
 		fState = dyld_image_state_dependents_mapped;
 		
 		// get list of libraries this image needs
-		DependentLibraryInfo libraryInfos[fLibraryCount]; 
+		DependentLibraryInfo libraryInfos[fLibraryCount];
+		// 获取需要添加的依赖库列表
 		this->doGetDependentLibraries(libraryInfos);
 		
 		// get list of rpaths that this image adds

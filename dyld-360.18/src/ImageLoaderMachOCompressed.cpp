@@ -752,7 +752,7 @@ uintptr_t ImageLoaderMachOCompressed::resolveFlat(const LinkContext& context, co
 	throwSymbolNotFound(context, symbolName, this->getPath(), "", "flat namespace");
 }
 
-
+// 二次决议,
 uintptr_t ImageLoaderMachOCompressed::resolveTwolevel(const LinkContext& context, const ImageLoader* targetImage, bool weak_import, 
 												const char* symbolName, bool runResolver, const ImageLoader** foundIn)
 {
@@ -810,17 +810,18 @@ uintptr_t ImageLoaderMachOCompressed::resolve(const LinkContext& context, const 
 		symbolAddress = this->resolveFlat(context, symbolName, weak_import, runResolver, targetImage);
 	}
 	else {
+		// 如果是绑定主程序
 		if ( libraryOrdinal == BIND_SPECIAL_DYLIB_MAIN_EXECUTABLE ) {
-			*targetImage = context.mainExecutable;
+			*targetImage = context.mainExecutable;// 返回宿主app 地址
 		}
-		else if ( libraryOrdinal == BIND_SPECIAL_DYLIB_SELF ) {
+		else if ( libraryOrdinal == BIND_SPECIAL_DYLIB_SELF ) { // 如果是dyld自身
 			*targetImage = this;
 		}
 		else if ( libraryOrdinal <= 0 ) {
 			dyld::throwf("bad mach-o binary, unknown special library ordinal (%ld) too big for symbol %s in %s",
 				libraryOrdinal, symbolName, this->getPath());
 		}
-		else if ( (unsigned)libraryOrdinal <= libraryCount() ) {
+		else if ( (unsigned)libraryOrdinal <= libraryCount() ) {// 目标image: 从该image获取真实的地址(函数地址等)
 			*targetImage = libImage((unsigned int)libraryOrdinal-1);
 		}
 		else {
@@ -853,7 +854,12 @@ uintptr_t ImageLoaderMachOCompressed::resolve(const LinkContext& context, const 
 	
 	return symbolAddress;
 }
-
+/*
+ address: 需要将绑定结果写回的目标地址
+ type: 类型
+ symbolName: 待绑定的动态库名称
+ libraryOrdinal: 库的索引值
+ */
 uintptr_t ImageLoaderMachOCompressed::bindAt(const LinkContext& context, uintptr_t addr, uint8_t type, const char* symbolName, 
 								uint8_t symboFlags, intptr_t addend, long libraryOrdinal, const char* msg, 
 								LastLookup* last, bool runResolver)
@@ -1206,13 +1212,16 @@ uintptr_t ImageLoaderMachOCompressed::doBindFastLazySymbol(uint32_t lazyBindingI
 		if ( lock != NULL )
 			lock();
 	}
-	
+	// 定位到 Dynamic Loader Info -> Lazy Bingding Info 地址
 	const uint8_t* const start = fLinkEditBase + fDyldInfo->lazy_bind_off;
+	//Lazy Bingding Info 结束 地址
 	const uint8_t* const end = &start[fDyldInfo->lazy_bind_size];
+	
 	if ( lazyBindingInfoOffset > fDyldInfo->lazy_bind_size ) {
 		dyld::throwf("fast lazy bind offset out of range (%u, max=%u) in image %s", 
 			lazyBindingInfoOffset, fDyldInfo->lazy_bind_size, this->getPath());
 	}
+	
 
 	uint8_t type = BIND_TYPE_POINTER;
 	uintptr_t address = 0;
@@ -1221,19 +1230,20 @@ uintptr_t ImageLoaderMachOCompressed::doBindFastLazySymbol(uint32_t lazyBindingI
 	long libraryOrdinal = 0;
 	bool done = false;
 	uintptr_t result = 0;
-	const uint8_t* p = &start[lazyBindingInfoOffset];
+	const uint8_t* p = &start[lazyBindingInfoOffset]; //lazy bind的第一个对象
+	// https://juejin.cn/post/7030986883547004935
 	while ( !done && (p < end) ) {
-		uint8_t immediate = *p & BIND_IMMEDIATE_MASK;
-		uint8_t opcode = *p & BIND_OPCODE_MASK;
+		uint8_t immediate = *p & BIND_IMMEDIATE_MASK; // 获取立即数 BIND_IMMEDIATE_MASK: 0x0F
+		uint8_t opcode = *p & BIND_OPCODE_MASK; // 助记码 BIND_OPCODE_MASK: 0xF0
 		++p;
 		switch (opcode) {
-			case BIND_OPCODE_DONE:
+			case BIND_OPCODE_DONE:// 绑定结束
 				done = true;
 				break;
-			case BIND_OPCODE_SET_DYLIB_ORDINAL_IMM:
+			case BIND_OPCODE_SET_DYLIB_ORDINAL_IMM://BIND_OPCODE_SET_DYLIB_ORDINAL_IMM 的意思为后面的数据代表库的索引值
 				libraryOrdinal = immediate;
 				break;
-			case BIND_OPCODE_SET_DYLIB_ORDINAL_ULEB:
+			case BIND_OPCODE_SET_DYLIB_ORDINAL_ULEB:// 该数据是库的索引值, 但数据类型为 leb128, 需要运算取值
 				libraryOrdinal = read_uleb128(p, end);
 				break;
 			case BIND_OPCODE_SET_DYLIB_SPECIAL_IMM:
@@ -1245,25 +1255,37 @@ uintptr_t ImageLoaderMachOCompressed::doBindFastLazySymbol(uint32_t lazyBindingI
 					libraryOrdinal = signExtended;
 				}
 				break;
-			case BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM:
+			case BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM://指令说明后面的数据为一个symbol字符串
 				symbolName = (char*)p;
 				symboFlags = immediate;
 				while (*p != '\0')
 					++p;
 				++p;
 				break;
-			case BIND_OPCODE_SET_TYPE_IMM:
+			case BIND_OPCODE_SET_TYPE_IMM: // 立即数为绑定数据的类型
 				type = immediate;
 				break;
-			case BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB:
+			case BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB: // 立即数为 绑定完成后的地址需要写回seg的索引, 接下来的数据为leb128类型, 代表在该节偏移量
 				if ( immediate >= fSegmentsCount )
 					dyld::throwf("BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB has segment %d which is too large (0..%d)", 
 							immediate, fSegmentsCount-1);
+				/*
+				1. segActualLoadAddress(immediate) 获取索引值对应的seg, 并取出其在vm中的首地址, 即对应的Section地址,
+				 加上 Section内的 偏移量 read_uleb128(p, end)得到目标地址地址
+				 
+				 2. 完成绑定后会得到真实的数据地址, 并将其写入1 中的目标地址中
+				 */
+				
 				address = segActualLoadAddress(immediate) + read_uleb128(p, end);
 				break;
-			case BIND_OPCODE_DO_BIND:
+			case BIND_OPCODE_DO_BIND:// 开始执行绑定
 				
-			
+			/*
+			 address: 需要将绑定结果写回的目标地址
+			 type: 类型
+			 symbolName: 待绑定的动态库名称
+			 libraryOrdinal: 库的索引值
+			 */
 				result = this->bindAt(context, address, type, symbolName, 0, 0, libraryOrdinal, "lazy ", NULL, true);
 				break;
 			case BIND_OPCODE_SET_ADDEND_SLEB:

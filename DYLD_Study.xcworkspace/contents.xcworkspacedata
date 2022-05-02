@@ -2,6 +2,18 @@
 <Workspace
    version = "1.0">
    <FileRef
+      location = "group:/Users/robin/GitHub/Apple/dyld/dyld-519.2.2/dyld_519.xcodeproj">
+   </FileRef>
+   <FileRef
+      location = "group:/Users/robin/GitHub/Apple/dyld/dyld-433.5/dyld_433.xcodeproj">
+   </FileRef>
+   <FileRef
+      location = "group:/Users/robin/GitHub/Apple/dyld/dyld-360.18/dyld_380.xcodeproj">
+   </FileRef>
+   <FileRef
+      location = "group:dyld-852.2/dyld_852.xcodeproj">
+   </FileRef>
+   <FileRef
       location = "group:bsd/bsd.xcodeproj">
    </FileRef>
    <FileRef
@@ -15,8 +27,5 @@
    </FileRef>
    <FileRef
       location = "group:objc4-818.2/objc.xcodeproj">
-   </FileRef>
-   <FileRef
-      location = "group:dyld-360.18/dyld.xcodeproj">
    </FileRef>
 </Workspace>
